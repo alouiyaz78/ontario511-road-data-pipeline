@@ -1,0 +1,59 @@
+version: 2
+
+sources:
+  - name: bronze
+    schema: bronze
+    description: "Données brutes Ontario 511 (jamais modifiées après insertion)"
+    tables:
+      - name: evenements
+        description: >
+          Snapshots des événements routiers. Append-only : chaque changement
+          de LastUpdated produit une nouvelle ligne, l'historique complet
+          existe donc nativement (pas de table d'historique séparée).
+        columns:
+          - name: id
+            tests:
+              - not_null
+          - name: lastupdated
+            tests:
+              - not_null
+
+      - name: constructions
+        description: "Snapshots des projets de construction. Append-only, même logique que evenements."
+        columns:
+          - name: id
+            tests:
+              - not_null
+
+      - name: cameras
+        description: "État courant des caméras (upsert sur viewid, pas d'historique)."
+        columns:
+          - name: viewid
+            tests:
+              - not_null
+              - unique
+
+      - name: roadconditions
+        description: "Snapshots des conditions routières. Append-only."
+        columns:
+          - name: locationdescription
+            tests:
+              - not_null
+          - name: roadwayname
+            tests:
+              - not_null
+
+      - name: seasonalloads
+        description: "Snapshots des restrictions de charge saisonnières. Append-only."
+        columns:
+          - name: segmentname
+            tests:
+              - not_null
+
+      - name: alerts
+        description: "État courant des alertes (upsert sur id, pas d'historique)."
+        columns:
+          - name: id
+            tests:
+              - not_null
+              - unique
