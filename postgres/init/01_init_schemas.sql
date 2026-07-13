@@ -98,3 +98,41 @@ CREATE TABLE IF NOT EXISTS bronze.roadconditions (
 
 CREATE INDEX IF NOT EXISTS idx_roadconditions_lastupdated ON bronze.roadconditions USING BRIN (lastupdated);
 CREATE INDEX IF NOT EXISTS idx_roadconditions_region ON bronze.roadconditions (region);
+
+-- ─── bronze.seasonalloads ───────────────────────────────────────────────────
+-- Pas d'ID unique en source : dédup sur (segmentname, restriction_date),
+-- puisqu'un même segment peut avoir plusieurs périodes de restriction dans le temps.
+
+CREATE TABLE IF NOT EXISTS bronze.seasonalloads (
+    row_id BIGSERIAL PRIMARY KEY,
+    segmentname TEXT NOT NULL,
+    routedescription TEXT,
+    status TEXT,
+    restriction_date DATE,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION,
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_seasonalloads_update UNIQUE (segmentname, restriction_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_seasonalloads_segment ON bronze.seasonalloads (segmentname);
+
+-- ─── bronze.alerts ──────────────────────────────────────────────────────────
+-- LastUpdated peut être NULL en source : pas fiable pour la dédup par snapshot.
+-- On garde donc l'état courant (upsert sur id), pas d'historique accumulé ici.
+
+CREATE TABLE IF NOT EXISTS bronze.alerts (
+    id BIGINT PRIMARY KEY,
+    message TEXT,
+    notes TEXT,
+    starttime TIMESTAMPTZ,
+    endtime TIMESTAMPTZ,
+    lastupdated TIMESTAMPTZ,
+    regions TEXT,
+    highimportance BOOLEAN,
+    sendnotification BOOLEAN,
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_alerts_id UNIQUE (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_highimportance ON bronze.alerts (highimportance);

@@ -1,0 +1,13 @@
+name: ontario511_demand
+version: 1.0.0
+
+profile: ontario511_demand
+
+models:
+  ontario511_demand:
+    staging:
+      +materialized: view
+      +schema: silver
+    marts:
+      +materialized: table
+      +schema: gold

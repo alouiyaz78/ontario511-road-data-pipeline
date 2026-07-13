@@ -1,0 +1,221 @@
+"""
+Fetcher générique Ontario 511 : appel API -> insertion bronze.<table>
+
+Réutilisé pour les 6 sources (événements, constructions, caméras, conditions
+routières, charges saisonnières, alertes), chacune ne différant que par sa
+configuration (endpoint, colonnes, clé de déduplication, mode d'insertion)
+et, si besoin, une transformation de ligne spécifique.
+
+Deux modes d'insertion :
+- DO NOTHING (append-only) : pour les sources où l'on veut conserver
+  l'historique complet des snapshots (événements, constructions, conditions,
+  charges saisonnières) — dédup sur (clé naturelle + horodatage).
+- DO UPDATE (upsert) : pour les sources "état courant", où l'historique
+  n'a pas de sens ou n'est pas fiable à tracer (caméras, alertes) — la ligne
+  existante est simplement mise à jour.
+
+Contrairement à l'implémentation SQL Server d'origine (tables temporaires +
+transfert manuel + ErrorLog en cas de doublon), la déduplication est gérée
+nativement par PostgreSQL — et pour les sources append-only, l'historique
+existe déjà sans table ni trigger dédiés.
+"""
+
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Callable, Optional
+
+import httpx
+import psycopg2
+import psycopg2.extensions
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class Ontario511Fetcher:
+    def __init__(
+        self,
+        name: str,
+        endpoint: str,
+        table: str,
+        columns: list[str],
+        conflict_constraint: str,
+        timestamp_fields: Optional[list[str]] = None,
+        transform_row: Optional[Callable[[dict], list[dict]]] = None,
+        do_update: bool = False,
+    ) -> None:
+        """
+        name                 : nom lisible pour les logs (ex: "événements")
+        endpoint             : chemin API après l'URL de base (ex: "event")
+        table                : table Bronze cible (ex: "evenements")
+        columns              : colonnes Postgres, dans l'ordre d'insertion
+        conflict_constraint  : nom de la contrainte UNIQUE pour ON CONFLICT
+        timestamp_fields     : colonnes contenant un epoch Unix à convertir
+        transform_row        : fonction optionnelle (item brut -> liste de lignes)
+        do_update            : True = upsert (état courant), False = append-only
+        """
+        self.name = name
+        self.endpoint = endpoint
+        self.table = table
+        self.columns = columns
+        self.conflict_constraint = conflict_constraint
+        self.timestamp_fields = timestamp_fields or []
+        self.transform_row = transform_row or self._default_transform
+        self.do_update = do_update
+        self._conn: psycopg2.extensions.connection | None = None
+
+    # ─── Connexion ──────────────────────────────────────────────────────────
+
+    def _get_conn(self) -> psycopg2.extensions.connection:
+        if self._conn is None or self._conn.closed:
+            self._conn = self._connect_with_retry()
+        return self._conn
+
+    def _connect_with_retry(
+        self, attempts: int = 10, delay: float = 3.0
+    ) -> psycopg2.extensions.connection:
+        for attempt in range(1, attempts + 1):
+            try:
+                conn = psycopg2.connect(
+                    host=settings.postgres_host,
+                    port=settings.postgres_port,
+                    user=settings.postgres_user,
+                    password=settings.postgres_password,
+                    dbname=settings.postgres_db,
+                )
+                logger.info("Connexion PostgreSQL établie (tentative %d)", attempt)
+                return conn
+            except psycopg2.OperationalError as exc:
+                logger.warning(
+                    "PostgreSQL non disponible (tentative %d/%d) : %s",
+                    attempt, attempts, exc,
+                )
+                if attempt < attempts:
+                    time.sleep(delay)
+        raise RuntimeError(
+            f"Impossible de se connecter à PostgreSQL après {attempts} tentatives"
+        )
+
+    # ─── Point d'entrée ─────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        logger.info("Démarrage de la collecte %s…", self.name)
+        try:
+            raw_items = self._fetch_raw()
+        except Exception:
+            logger.exception("Erreur lors de la collecte %s", self.name)
+            return
+
+        rows: list[dict] = []
+        for item in raw_items:
+            rows.extend(self.transform_row(item))
+
+        logger.info("%d lignes prêtes pour %s -> insertion en base", len(rows), self.name)
+        try:
+            affected = self._insert_rows(rows)
+            if self.do_update:
+                logger.info("✓ %d lignes mises à jour/insérées dans bronze.%s", affected, self.table)
+            else:
+                logger.info(
+                    "✓ %d nouvelles lignes insérées dans bronze.%s (%d doublons ignorés)",
+                    affected, self.table, len(rows) - affected,
+                )
+        except Exception:
+            logger.exception("Erreur lors de l'insertion %s", self.name)
+
+    # ─── Extraction ─────────────────────────────────────────────────────────
+
+    def _fetch_raw(self) -> list[dict]:
+        url = settings.ontario511_api_base_url + self.endpoint
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url, params={"format": "json", "lang": "en"})
+            response.raise_for_status()
+            data = response.json()
+
+        if isinstance(data, dict) and "Data" in data:
+            return data["Data"]
+        if isinstance(data, list):
+            return data
+        logger.warning("[%s] Format de réponse inattendu", self.endpoint)
+        return []
+
+    def _default_transform(self, item: dict) -> list[dict]:
+        row = {col: item.get(self._to_api_key(col)) for col in self.columns}
+        for ts_field in self.timestamp_fields:
+            row[ts_field] = self._epoch_to_datetime(row.get(ts_field))
+        return [row]
+
+    @staticmethod
+    def _to_api_key(column: str) -> str:
+        """Retrouve la casse d'origine de l'API (ex: 'roadwayname' -> 'RoadwayName')."""
+        special_cases = {
+            "sourceid": "SourceId",
+            "roadwayname": "RoadwayName",
+            "directionoftravel": "DirectionOfTravel",
+            "plannedenddate": "PlannedEndDate",
+            "lanesaffected": "LanesAffected",
+            "latitudesecondary": "LatitudeSecondary",
+            "longitudesecondary": "LongitudeSecondary",
+            "eventtype": "EventType",
+            "isfullclosure": "IsFullClosure",
+            "encodedpolyline": "EncodedPolyline",
+            "recurrenceschedules": "RecurrenceSchedules",
+            "linkid": "LinkId",
+            "locationdescription": "LocationDescription",
+            "routedescription": "RouteDescription",
+            "segmentname": "SegmentName",
+            "restriction_date": "Date",
+            "starttime": "StartTime",
+            "endtime": "EndTime",
+            "lastupdated": "LastUpdated",
+            "highimportance": "HighImportance",
+            "sendnotification": "SendNotification",
+        }
+        return special_cases.get(column, column.capitalize())
+
+    @staticmethod
+    def _epoch_to_datetime(value) -> Optional[datetime]:
+        """
+        Convertit un epoch Unix (int) en datetime timezone-aware (UTC).
+        Contrairement au script d'origine (naïf), on attache explicitement
+        UTC pour un stockage correct en colonne TIMESTAMPTZ.
+        """
+        if not value:
+            return None
+        try:
+            return datetime.fromtimestamp(int(value), tz=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    # ─── Insertion ──────────────────────────────────────────────────────────
+
+    def _insert_rows(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+
+        conn = self._get_conn()
+        col_list = ", ".join(self.columns)
+        placeholders = ", ".join(f"%({col})s" for col in self.columns)
+
+        if self.do_update:
+            set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in self.columns)
+            conflict_sql = f"ON CONFLICT ON CONSTRAINT {self.conflict_constraint} DO UPDATE SET {set_clause}"
+        else:
+            conflict_sql = f"ON CONFLICT ON CONSTRAINT {self.conflict_constraint} DO NOTHING"
+
+        affected = 0
+        with conn.cursor() as cur:
+            for row in rows:
+                cur.execute(
+                    f"""
+                    INSERT INTO bronze.{self.table} ({col_list})
+                    VALUES ({placeholders})
+                    {conflict_sql}
+                    """,
+                    row,
+                )
+                affected += cur.rowcount
+        conn.commit()
+        return affected
