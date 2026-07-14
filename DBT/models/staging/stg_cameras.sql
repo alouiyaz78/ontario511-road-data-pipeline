@@ -1,9 +1,8 @@
-
 SELECT
     baseid AS base_id,
     source,
     sourceid AS source_id,
-    roadway,
+    roadway AS roadway_name,
     direction,
     location,
     latitude,

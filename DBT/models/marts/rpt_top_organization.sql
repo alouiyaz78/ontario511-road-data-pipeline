@@ -3,7 +3,7 @@ SELECT
     organization,
     COUNT(*) AS nb_evenements
 FROM {{ ref('stg_evenements') }}
-WHERE source_id IS NOT NULL
+WHERE organization IS NOT NULL
 GROUP BY organization
-ORDER BY nb_evenements DESC
+ORDER BY nb_evenements DESC, organization ASC
 LIMIT 1
