@@ -3,57 +3,73 @@ version: 2
 sources:
   - name: bronze
     schema: bronze
-    description: "Données brutes Ontario 511 (jamais modifiées après insertion)"
+    description: "Raw Ontario 511 data (never modified after insertion)"
     tables:
       - name: evenements
         description: >
-          Snapshots des événements routiers. Append-only : chaque changement
-          de LastUpdated produit une nouvelle ligne, l'historique complet
-          existe donc nativement (pas de table d'historique séparée).
+          Road event snapshots. Append-only: every change to LastUpdated
+          produces a new row, so the full history exists natively (no
+          separate history table needed).
         columns:
           - name: id
+            description: "Unique identifier for the event, stable for its whole lifecycle (confirmed against the Ontario 511 API documentation)."
             tests:
               - not_null
           - name: lastupdated
+            description: "Timestamp of the last update to this event, in UTC. Combined with id, forms the natural key for deduplication."
             tests:
               - not_null
 
       - name: constructions
-        description: "Snapshots des projets de construction. Append-only, même logique que evenements."
+        description: "Construction project snapshots. Append-only, same pattern as evenements."
         columns:
           - name: id
+            description: "Unique identifier for the construction project (confirmed unique and stable per the API documentation: 'A unique identifier')."
+            tests:
+              - not_null
+          - name: lastupdated
+            description: "Timestamp of the last update to this construction project, in UTC."
             tests:
               - not_null
 
       - name: cameras
-        description: "État courant des caméras (upsert sur viewid, pas d'historique)."
+        description: "Current state of cameras (upsert on viewid, no history kept)."
         columns:
           - name: viewid
+            description: "Unique identifier for an individual camera view. A single physical camera (baseid) can expose multiple views."
             tests:
               - not_null
               - unique
 
       - name: roadconditions
-        description: "Snapshots des conditions routières. Append-only."
+        description: >
+          Road condition snapshots. Append-only. Note: this source has no
+          natural identifier in the API — deduplication relies on the
+          composite key (locationdescription, roadwayname, lastupdated),
+          the best available approximation given the fields provided.
         columns:
           - name: locationdescription
+            description: "Description of the affected location, often expressed as one road to another. Part of the composite dedup key."
             tests:
               - not_null
           - name: roadwayname
+            description: "The highway/road number (e.g. '401', '77'). Coarse-grained on its own — see locationdescription for the finer location detail."
             tests:
               - not_null
 
       - name: seasonalloads
-        description: "Snapshots des restrictions de charge saisonnières. Append-only."
+        description: "Seasonal load restriction snapshots. Append-only."
         columns:
           - name: segmentname
+            description: "Name of the road segment under seasonal load restriction."
             tests:
               - not_null
 
       - name: alerts
-        description: "État courant des alertes (upsert sur id, pas d'historique)."
+        description: "Current state of alerts (upsert on id, no history kept — LastUpdated is not reliable enough in this source to support snapshotting)."
         columns:
           - name: id
+            description: "Unique identifier for the alert."
             tests:
               - not_null
               - unique

@@ -1,0 +1,90 @@
+version: 2
+
+models:
+  - name: fct_kpi_statistics
+    description: >
+      Time-stamped snapshot of global Ontario 511 KPIs. Incrementally
+      materialized: every run appends a new row rather than overwriting
+      the previous one, preserving a history of KPI values over time
+      (useful for trend dashboards, and potentially as a base for future
+      ML feature engineering).
+    columns:
+      - name: date_calcul
+        description: "Timestamp of this KPI snapshot, truncated to the minute. Unique key for the incremental model."
+        tests:
+          - not_null
+          - unique
+      - name: nombre_evenements_actifs
+        description: "Count of currently active road events (planned_end_date is null or in the future)."
+      - name: nombre_moyen_evenements_par_jour
+        description: "Average number of events reported per distinct day, based on start_date."
+      - name: duree_moyenne_evenements_heures
+        description: "Average duration of events, in hours, computed from start_date to planned_end_date. Only includes events where both dates are known."
+      - name: nombre_total_cameras
+        description: "Total number of camera views currently tracked."
+      - name: nombre_moyen_constructions_par_jour
+        description: "Average number of construction projects reported per distinct day, based on start_date."
+
+  - name: fct_road_disruption_index
+    description: >
+      Composite disruption score per roadway, combining active events,
+      active construction projects, and active seasonal load restrictions.
+      Weights (events x2, constructions x3, seasonal restrictions x1)
+      reflect an assumed relative traffic impact and are not derived from
+      the source data — documented here as a modeling assumption, subject
+      to revision.
+    columns:
+      - name: roadway_name
+        description: "Name/number of the roadway. Coalesced across events, constructions, and seasonal loads sources."
+        tests:
+          - not_null
+      - name: active_events
+        description: "Count of currently active events on this roadway."
+      - name: active_constructions
+        description: "Count of currently active construction projects on this roadway."
+      - name: active_seasonal_restrictions
+        description: "Count of currently active seasonal load restrictions on this roadway segment."
+      - name: disruption_score
+        description: "Weighted composite score: (active_events * 2) + (active_constructions * 3) + active_seasonal_restrictions."
+
+  - name: rpt_condition_by_region
+    description: "Count of road condition observations, grouped by region and condition type."
+    columns:
+      - name: region
+        description: "Cardinal region of the road condition (e.g. Southwestern, Northern, Central)."
+      - name: condition
+        description: "Road condition description (e.g. snow packed, bare and wet road). Multiple conditions per observation are pipe-separated."
+      - name: occurrences
+        description: "Number of observations matching this region/condition combination."
+
+  - name: rpt_top_camera_roadway
+    description: >
+      The single roadway with the highest number of tracked camera views.
+      Deterministic: ties are broken alphabetically by roadway_name.
+    columns:
+      - name: roadway_name
+        description: "Name/number of the roadway with the most camera views."
+      - name: nb_cameras
+        description: "Number of camera views on this roadway."
+
+  - name: rpt_top_construction_roadway
+    description: >
+      The single roadway with the highest number of currently active
+      construction projects. Deterministic: ties are broken alphabetically
+      by roadway_name.
+    columns:
+      - name: roadway_name
+        description: "Name/number of the roadway with the most active construction projects."
+      - name: nb_constructions_actives
+        description: "Number of active construction projects on this roadway."
+
+  - name: rpt_top_organization
+    description: >
+      The single organization that has reported the highest number of
+      road events. Deterministic: ties are broken alphabetically by
+      organization.
+    columns:
+      - name: organization
+        description: "Name of the reporting organization."
+      - name: nb_evenements
+        description: "Number of events reported by this organization."

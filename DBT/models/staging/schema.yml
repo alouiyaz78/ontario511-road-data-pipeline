@@ -1,0 +1,197 @@
+version: 2
+
+models:
+  - name: stg_evenements
+    description: >
+      Cleaned view of road event snapshots. is_active is derived solely
+      from planned_end_date (a row with no planned_end_date is treated
+      as still active), independent of start_date.
+    columns:
+      - name: event_id
+        description: "Unique identifier for the event."
+        tests:
+          - not_null
+      - name: source_id
+        description: "Source system identifier for the event."
+      - name: organization
+        description: "Organization that reported the event."
+      - name: roadway_name
+        description: "Name/number of the affected roadway."
+      - name: direction
+        description: "Direction of travel affected by the event."
+      - name: description
+        description: "Free-text summary of the event."
+      - name: reported
+        description: "Timestamp the event was first reported, in UTC."
+      - name: last_updated
+        description: "Timestamp of the last update to this event, in UTC."
+      - name: start_date
+        description: "Start date of the event, in UTC. Can be null in source data."
+      - name: planned_end_date
+        description: "Planned end date of the event, in UTC. Can be null (open-ended event)."
+      - name: event_type
+        description: "Type of event (e.g. roadwork)."
+      - name: latitude
+        description: "Latitude of the event location."
+      - name: longitude
+        description: "Longitude of the event location."
+      - name: is_active
+        description: "True if planned_end_date is null or in the future."
+
+  - name: stg_constructions
+    description: >
+      Cleaned view of construction project snapshots. is_active considers
+      both start_date and planned_end_date: a row is active if it has
+      either started (or start_date is unknown) and has not passed its
+      planned end (or has no planned end). A null start_date does NOT
+      exclude a row from being active — it is treated the same way as a
+      null planned_end_date (unknown, not "not yet started").
+    columns:
+      - name: construction_id
+        description: "Unique identifier for the construction project."
+        tests:
+          - not_null
+      - name: source_id
+        description: "Source system identifier for the construction project."
+      - name: organization
+        description: "Organization that reported the construction project."
+      - name: roadway_name
+        description: "Name/number of the affected roadway."
+      - name: direction_of_travel
+        description: "Direction of travel affected by the construction project."
+      - name: description
+        description: "Free-text summary of the construction project."
+      - name: reported
+        description: "Timestamp the construction project was first reported, in UTC."
+      - name: last_updated
+        description: "Timestamp of the last update to this construction project, in UTC."
+      - name: start_date
+        description: "Start date of the construction project, in UTC. Frequently null in source data."
+      - name: planned_end_date
+        description: "Planned end date of the construction project, in UTC."
+      - name: lanes_affected
+        description: "Description of lanes affected (e.g. 'all lanes')."
+      - name: latitude
+        description: "Latitude of the construction location."
+      - name: longitude
+        description: "Longitude of the construction location."
+      - name: event_type
+        description: "Type of construction project (e.g. roadwork)."
+      - name: is_full_closure
+        description: "True if all lanes are closed."
+      - name: comment
+        description: "Additional free-text information about the construction project."
+      - name: is_active
+        description: >
+          True if (start_date is null or in the past) and (planned_end_date
+          is null or in the future). See model-level description for the
+          rationale on null handling.
+
+  - name: stg_cameras
+    description: "Cleaned view of camera views, flattened one row per (camera, view)."
+    columns:
+      - name: base_id
+        description: "Identifier of the physical camera (can expose multiple views)."
+      - name: source
+        description: "Source system for this camera."
+      - name: source_id
+        description: "Source system identifier for the camera."
+      - name: roadway_name
+        description: "Name/number of the roadway where the camera is located."
+      - name: direction
+        description: "Direction the camera is facing/monitoring."
+      - name: location
+        description: "Description of the camera's location."
+      - name: latitude
+        description: "Latitude of the camera."
+      - name: longitude
+        description: "Longitude of the camera."
+      - name: view_id
+        description: "Unique identifier for this specific camera view."
+        tests:
+          - not_null
+          - unique
+      - name: url
+        description: "URL of the camera image/stream."
+      - name: status
+        description: "Operational status of the camera view."
+      - name: description
+        description: "Free-text description of the camera view."
+
+  - name: stg_roadconditions
+    description: >
+      Cleaned view of road condition snapshots. No natural identifier in
+      the source API — see bronze.roadconditions source documentation for
+      the deduplication approach and its known limitations.
+    columns:
+      - name: location_description
+        description: "Description of the affected location."
+        tests:
+          - not_null
+      - name: condition
+        description: "Road condition(s), pipe-separated if multiple (e.g. 'Wet|Snow')."
+      - name: visibility
+        description: "Visibility description (e.g. Good, fair)."
+      - name: drifting
+        description: "Yes/No indicating presence of drifting snow."
+      - name: region
+        description: "Cardinal region of the road condition."
+      - name: roadway_name
+        description: "Name/number of the affected roadway."
+        tests:
+          - not_null
+      - name: last_updated
+        description: "Timestamp of the last update to this condition, in UTC."
+
+  - name: stg_seasonalloads
+    description: >
+      Cleaned view of seasonal load restriction snapshots. has_active_restriction
+      is a simple text match on status rather than a date comparison, since
+      the source only provides a restriction start date with no end date.
+    columns:
+      - name: segment_name
+        description: "Name of the road segment under seasonal load restriction."
+        tests:
+          - not_null
+      - name: route_description
+        description: "Description of the route covered by the restriction."
+      - name: status
+        description: "Status of the restriction (e.g. 'Restrictions in effect')."
+      - name: restriction_date
+        description: "Start date of the restriction (source provides no end date)."
+      - name: latitude
+        description: "Latitude of the segment."
+      - name: longitude
+        description: "Longitude of the segment."
+      - name: has_active_restriction
+        description: "True if status contains the text 'restriction' (case-insensitive)."
+
+  - name: stg_alerts
+    description: >
+      Cleaned view of current alerts (upsert source, no history). is_active
+      is derived from end_time only, same null-handling pattern as
+      stg_evenements.
+    columns:
+      - name: alert_id
+        description: "Unique identifier for the alert."
+        tests:
+          - not_null
+          - unique
+      - name: message
+        description: "Alert message text."
+      - name: notes
+        description: "Additional notes about the alert."
+      - name: start_time
+        description: "Start time of the alert, in UTC."
+      - name: end_time
+        description: "End time of the alert, in UTC. Can be null (open-ended alert)."
+      - name: last_updated
+        description: "Timestamp of the last update to this alert, in UTC. Not reliable enough in source to support historical snapshotting."
+      - name: regions
+        description: "Affected regions, pipe-separated if multiple."
+      - name: high_importance
+        description: "True if the alert is flagged as high importance."
+      - name: send_notification
+        description: "True if a notification should be sent for this alert."
+      - name: is_active
+        description: "True if end_time is null or in the future."

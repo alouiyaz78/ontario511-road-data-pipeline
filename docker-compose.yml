@@ -52,6 +52,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./DBT:/app
+    ports:
+      - "8090:8080"
     restart: "no"
 
 volumes:
