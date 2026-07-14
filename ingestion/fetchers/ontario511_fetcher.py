@@ -151,6 +151,7 @@ class Ontario511Fetcher:
     def _to_api_key(column: str) -> str:
         """Retrouve la casse d'origine de l'API (ex: 'roadwayname' -> 'RoadwayName')."""
         special_cases = {
+            "id": "ID",
             "sourceid": "SourceId",
             "roadwayname": "RoadwayName",
             "directionoftravel": "DirectionOfTravel",

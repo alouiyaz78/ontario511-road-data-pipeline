@@ -26,6 +26,7 @@ def build_fetchers() -> list[Ontario511Fetcher]:
                      "description", "reported", "lastupdated", "startdate",
                      "plannedenddate", "eventtype", "latitude", "longitude"],
             conflict_constraint="uq_evenements_update",
+            timestamp_fields=["reported", "lastupdated", "startdate", "plannedenddate"],
         ),
         Ontario511Fetcher(
             name="constructions",
@@ -37,6 +38,7 @@ def build_fetchers() -> list[Ontario511Fetcher]:
                      "longitudesecondary", "eventtype", "isfullclosure", "comment",
                      "encodedpolyline", "recurrence", "recurrenceschedules", "linkid"],
             conflict_constraint="uq_constructions_update",
+            timestamp_fields=["reported", "lastupdated", "startdate", "plannedenddate"],
         ),
         Ontario511Fetcher(
             name="caméras",
