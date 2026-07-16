@@ -1,6 +1,10 @@
 -- Ontario 511 — Initialisation des schémas et tables Bronze
 -- Architecture : append-only, déduplication via contrainte UNIQUE (même pattern que le projet Vélib)
 
+-- Extension pgvector, nécessaire pour les embeddings du chatbot RAG.
+CREATE EXTENSION IF NOT EXISTS vector;
+
+
 CREATE SCHEMA IF NOT EXISTS bronze;
 CREATE SCHEMA IF NOT EXISTS silver;
 CREATE SCHEMA IF NOT EXISTS gold;

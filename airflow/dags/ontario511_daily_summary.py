@@ -1,22 +1,25 @@
 """
 DAG de résumé quotidien Ontario 511 : envoie un email une fois par jour
 avec le nombre de nouvelles lignes insérées dans chaque table bronze au
-cours des dernières 24h, plus le nombre de runs dbt réussis/échoués.
+cours des dernières 24h.
 
-Séparé du DAG principal (ontario511_pipeline) plutôt qu'ajouté comme
-tâche conditionnelle dedans : un DAG = une responsabilité, plus simple à
-monitorer et à faire évoluer indépendamment (fréquence différente : 2h
-pour le pipeline, 24h pour le résumé).
+Fuseau horaire : Airflow utilise UTC par défaut pour tout planifier. Le
+DAG est explicitement rattaché à America/Toronto (via pendulum) pour que
+"8h" reste 8h heure de l'Ontario toute l'année, y compris après les
+changements d'heure (EST/EDT) — sans ça, le cron UTC dériverait de 4h à
+5h de décalage selon la saison.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
+import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.smtp.operators.smtp import EmailOperator
 
 ALERT_EMAIL = os.environ.get("AIRFLOW_ALERT_EMAIL")
+ONTARIO_TZ = pendulum.timezone("America/Toronto")
 
 default_args = {
     "owner": "ontario511",
@@ -26,7 +29,7 @@ default_args = {
 
 
 def _build_summary(**context) -> None:
-    """Interroge bronze/gold pour compter les insertions des dernières 24h."""
+    """Interroge bronze pour compter les insertions des dernières 24h."""
     import psycopg2
 
     conn = psycopg2.connect(
@@ -61,9 +64,9 @@ def _build_summary(**context) -> None:
 with DAG(
     dag_id="ontario511_daily_summary",
     default_args=default_args,
-    description="Résumé quotidien des insertions Ontario 511, envoyé par email",
+    description="Résumé quotidien des insertions Ontario 511, envoyé par email (8h heure Ontario)",
     schedule_interval="0 8 * * *",
-    start_date=datetime(2026, 7, 15),
+    start_date=pendulum.datetime(2026, 7, 15, tz=ONTARIO_TZ),
     catchup=False,
     tags=["ontario511", "reporting"],
 ) as dag:

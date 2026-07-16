@@ -1,7 +1,7 @@
 services:
 
   postgres:
-    image: postgres:18.1
+    image: pgvector/pgvector:pg18
     container_name: ontario511_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

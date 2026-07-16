@@ -14,6 +14,20 @@ import pandas as pd
 
 from config import settings
 
+# Toutes les colonnes datetime sont stockées en UTC (TIMESTAMPTZ) — c'est
+# la bonne pratique de stockage, qui évite les ambiguïtés lors des
+# changements d'heure (EST/EDT). La conversion en heure Ontario se fait
+# uniquement à l'affichage, ici au niveau SQL plutôt qu'en post-traitement
+# pandas : Postgres gère nativement les règles DST, pas besoin de les
+# réimplémenter en Python.
+ONTARIO_TZ = "America/Toronto"
+
+
+def _to_ontario_time(column: str, alias: str | None = None) -> str:
+    """Génère le fragment SQL convertissant une colonne UTC en heure Ontario."""
+    alias = alias or column
+    return f"{column} AT TIME ZONE 'UTC' AT TIME ZONE '{ONTARIO_TZ}' AS {alias}"
+
 
 def _get_connection():
     return psycopg2.connect(
@@ -38,8 +52,10 @@ def _query_df(sql: str, params: tuple = ()) -> pd.DataFrame:
 
 def get_latest_kpi() -> dict:
     """Dernier snapshot de KPI globaux (gold.fct_kpi_statistics)."""
-    df = _query_df("""
-        SELECT *
+    df = _query_df(f"""
+        SELECT {_to_ontario_time('date_calcul')}, nombre_evenements_actifs,
+               nombre_moyen_evenements_par_jour, duree_moyenne_evenements_heures,
+               nombre_total_cameras, nombre_moyen_constructions_par_jour
         FROM gold.fct_kpi_statistics
         ORDER BY date_calcul DESC
         LIMIT 1
@@ -49,8 +65,8 @@ def get_latest_kpi() -> dict:
 
 def get_kpi_history() -> pd.DataFrame:
     """Historique complet des KPI, pour le graphique de tendance."""
-    return _query_df("""
-        SELECT date_calcul, nombre_evenements_actifs, nombre_total_cameras,
+    return _query_df(f"""
+        SELECT {_to_ontario_time('date_calcul')}, nombre_evenements_actifs, nombre_total_cameras,
                nombre_moyen_evenements_par_jour, nombre_moyen_constructions_par_jour
         FROM gold.fct_kpi_statistics
         ORDER BY date_calcul ASC
@@ -95,9 +111,10 @@ def get_active_alerts() -> pd.DataFrame:
     road conditions dégradées) — gold.fct_active_alerts. Destinée à un
     export direct pour usagers de la route / sociétés de transport.
     """
-    return _query_df("""
+    return _query_df(f"""
         SELECT alert_type, roadway_name, region, organization, category,
-               description, is_full_closure, reported_since, last_updated,
+               description, is_full_closure,
+               {_to_ontario_time('reported_since')}, {_to_ontario_time('last_updated')},
                latitude, longitude
         FROM gold.fct_active_alerts
         ORDER BY roadway_name, alert_type
@@ -112,9 +129,10 @@ def get_events_geo(active_only: bool = True) -> pd.DataFrame:
     Pas de filtre par région : cette source n'a pas de colonne region
     (contrairement à stg_roadconditions) — seulement latitude/longitude.
     """
-    sql = """
+    sql = f"""
         SELECT event_id, organization, roadway_name, description,
-               event_type, latitude, longitude, is_active, last_updated
+               event_type, latitude, longitude, is_active,
+               {_to_ontario_time('last_updated')}
         FROM silver.stg_evenements
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
     """
@@ -125,9 +143,10 @@ def get_events_geo(active_only: bool = True) -> pd.DataFrame:
 
 def get_constructions_geo(active_only: bool = True) -> pd.DataFrame:
     """Constructions géolocalisées (silver.stg_constructions), pour la carte."""
-    sql = """
+    sql = f"""
         SELECT construction_id, organization, roadway_name, description,
-               event_type, is_full_closure, latitude, longitude, is_active, last_updated
+               event_type, is_full_closure, latitude, longitude, is_active,
+               {_to_ontario_time('last_updated')}
         FROM silver.stg_constructions
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
     """
