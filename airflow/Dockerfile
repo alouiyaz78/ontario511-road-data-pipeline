@@ -8,11 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Pré-créer les dossiers qui recevront des volumes anonymes, avec les
+# bonnes permissions, AVANT le montage — sinon Docker crée ces points de
+# montage en root par défaut au moment du "docker compose up", peu
+# importe l'utilisateur défini plus bas avec USER.
+RUN mkdir -p /opt/airflow/ingestion/.venv /opt/airflow/dbt_project/.venv /opt/airflow/dbt_project/target && \
+    chown -R airflow:root /opt/airflow/ingestion/.venv /opt/airflow/dbt_project/.venv /opt/airflow/dbt_project/target
+
 USER airflow
 
-# uv nécessaire pour exécuter ingestion/ et DBT/ depuis les tâches Airflow,
-# exactement comme en local — cohérence avec le reste du projet plutôt que
-# de dupliquer les dépendances via pip dans l'image Airflow elle-même.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/airflow/.local/bin:${PATH}"
 
