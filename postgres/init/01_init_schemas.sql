@@ -140,3 +140,20 @@ CREATE TABLE IF NOT EXISTS bronze.alerts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_alerts_highimportance ON bronze.alerts (highimportance);
+-- ─── bronze.description_embeddings ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bronze.description_embeddings (
+    row_id BIGSERIAL PRIMARY KEY,
+    source_table TEXT NOT NULL,
+    source_id BIGINT NOT NULL,
+    description TEXT NOT NULL,
+    embedding vector(768),
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_description_embeddings_source UNIQUE (source_table, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_description_embeddings_vector
+    ON bronze.description_embeddings
+    USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS idx_description_embeddings_source
+    ON bronze.description_embeddings (source_table, source_id);

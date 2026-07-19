@@ -52,10 +52,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./DBT:/app
-      # Volumes anonymes : .venv/ et target/ restent DANS le conteneur,
-      # jamais écrits sur le disque hôte. Ça évite tout conflit de
-      # permissions entre l'UID du conteneur et celui de l'hôte, et ça
-      # garantit que quiconque clone le repo n'a pas ce problème non plus.
       - /app/.venv
       - /app/target
     ports:
@@ -70,6 +66,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ollama:
+        condition: service_started
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -77,8 +75,22 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       DASHBOARD_PORT: 8000
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: qwen3:1.7b
+    volumes:
+      - ./dashboard:/app
+      - /app/.venv
     ports:
       - "8001:8000"
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ontario511_ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
     restart: unless-stopped
 
   airflow-init:
@@ -101,7 +113,6 @@ services:
       - ./airflow/dags:/opt/airflow/dags
       - ./ingestion:/opt/airflow/ingestion
       - ./DBT:/opt/airflow/dbt_project
-      # Mêmes volumes anonymes que le service dbt, pour les mêmes raisons.
       - /opt/airflow/ingestion/.venv
       - /opt/airflow/dbt_project/.venv
       - /opt/airflow/dbt_project/target
@@ -188,3 +199,4 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:
