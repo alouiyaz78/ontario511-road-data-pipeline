@@ -13,8 +13,9 @@ tool call results, not asked of the model directly).
 
 import gradio as gr
 import plotly.graph_objects as go
+import traceback
 
-from chatbot_agent import build_agent, extract_locations, PROVIDER_CHOICES
+from chatbot_agent import build_agent, extract_locations, PROVIDER_CHOICES, _detect_language_instruction
 
 DISCLAIMER = (
     "Choose a provider and enter your own API key to start chatting. "
@@ -65,7 +66,36 @@ def _locations_map(locations: list[dict]) -> go.Figure:
         hoverlabel=dict(bgcolor="white", font_size=12, font_color="#1C1E24"),
     )
     return fig
+def history_to_text(history) -> str:
+    """
+    Convert Gradio chat history to plain text.
+    Compatible with both old and new Chatbot formats.
+    """
+    texts = []
 
+    if not history:
+        return ""
+
+    for turn in history:
+        if not isinstance(turn, dict):
+            continue
+
+        content = turn.get("content", "")
+
+        if isinstance(content, str):
+            texts.append(content)
+
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        texts.append(text)
+
+                elif isinstance(item, str):
+                    texts.append(item)
+
+    return " ".join(texts)
 
 def _respond(message: str, history: list, provider: str, api_key: str):
     if not message or not message.strip():
@@ -81,17 +111,40 @@ def _respond(message: str, history: list, provider: str, api_key: str):
 
     try:
         agent = build_agent(provider, api_key)
-        result = agent.invoke({"input": message})
+
+        history_text = history_to_text(history)
+
+        language_instruction = _detect_language_instruction(
+            message,
+            history_text
+        )
+
+        result = agent.invoke(
+            {
+                "input": message,
+                "language_instruction": language_instruction,
+            }
+        )
+
+        print("=" * 80)
+        print("RESULT:")
+        print(result)
+        print("=" * 80)
+
         answer = result["output"]
         locations = extract_locations(result.get("intermediate_steps", []))
+
     except Exception as exc:
-        answer = f"Error: {exc}"
+        import traceback
+        traceback.print_exc()
+
+        answer = f"{type(exc).__name__}: {exc}"
         locations = []
 
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": answer})
-    return history, "", _locations_map(locations)
 
+    return history, "", _locations_map(locations)
 
 def build_chatbot_tab() -> None:
     gr.Markdown(DISCLAIMER)

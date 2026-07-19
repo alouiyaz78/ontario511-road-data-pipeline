@@ -1,20 +1,8 @@
-"""
-Ontario 511 chatbot agent: combines Text-to-SQL (precise figures from
-gold/silver schemas) and RAG (semantic search over active event and
-construction descriptions).
 
-The chat model is provided dynamically by the user through the
-interface: choice of provider (Claude / OpenAI / Gemini) plus their own
-API key. The key is never persisted server-side — it is only used to
-build the agent for the current request.
-
-Embeddings (semantic search) stay on local Ollama (nomic-embed-text):
-free, lightweight, and there's no need to expose this internal step to
-a third-party API key since it is invisible to the user.
-"""
 
 import json
 import logging
+import re
 
 import psycopg2
 import psycopg2.extras
@@ -31,11 +19,6 @@ ALLOWED_SCHEMAS = ("silver", "gold")
 
 PROVIDER_CHOICES = ["Claude", "OpenAI", "Gemini"]
 
-# Marker used to embed machine-readable coordinates at the end of a tool's
-# text output, without asking the LLM to handle or repeat coordinates
-# itself (which would be fragile and error-prone). The chatbot tab parses
-# this block out of the agent's intermediate steps to draw the mini-map,
-# while the LLM only ever sees and summarizes the human-readable part.
 LOCATIONS_MARKER = "\n---LOCATIONS_JSON---\n"
 
 DATABASE_SCHEMA_DESCRIPTION = """
@@ -74,9 +57,30 @@ silver.stg_cameras — camera views
 
 silver.stg_roadconditions — road condition observations
   columns: location_description, condition, visibility, region, roadway_name, last_updated
+
+Important, roadway_name format inconsistency: this column is NOT stored
+consistently across tables. For example, highway 417 appears as "HWY 417"
+in stg_evenements, as "417" in stg_constructions, and as either "417" or
+"HWY 417" in fct_active_alerts (which combines both sources). Never filter
+on roadway_name with an exact match (=) — always use
+roadway_name ILIKE '%417%' (substring match on just the number/name),
+which is the only reliable way to match a roadway across all these
+formats and tables.
 """
 
 SYSTEM_PROMPT = f"""You are a helpful assistant for the Ontario 511 road data platform.
+
+Language rule (critical, applies above all else): always reply in the
+same language the user's most recent message was written in — French in,
+French out; English in, English out — for the entire conversation, not
+just the first message. Tool outputs (query results, error messages like
+"No results found") are always in English regardless of the user's
+language; this must NOT influence which language you reply in. If you
+are unsure of the language, default to the language used earlier in the
+conversation, not English. A "[language_instruction]" tag will accompany
+each message telling you explicitly which language to reply in — always
+follow it.
+
 You answer questions about road events, constructions, cameras, and conditions
 in Ontario using two tools:
 
@@ -85,9 +89,37 @@ in Ontario using two tools:
 
 {DATABASE_SCHEMA_DESCRIPTION}
 
-Always answer in the same language as the question. Be concise and factual —
-cite actual numbers and roadway names from tool results, never invent data.
-If a tool returns an error or no results, say so plainly rather than guessing.
+Map display rule: whenever a query_database call targets a table that has
+latitude and longitude columns (fct_active_alerts, stg_evenements,
+stg_constructions), always include latitude and longitude in the SELECT
+list, even if the user didn't ask for coordinates explicitly. These
+columns feed a map shown alongside your answer — leaving them out means
+the map stays empty even when relevant incidents were found. Do not
+mention coordinates in your written answer; just include them in the
+query so the map can render.
+
+Be concise and factual — cite actual numbers and roadway names from tool
+results, never invent data. If a tool returns an error or no results, say
+so plainly (translated into the user's language) rather than guessing.
+
+You do not have access to a routing engine, live travel times, or a map of
+alternate roads. If asked to suggest a faster route or estimate time saved
+by avoiding a construction zone, say so explicitly rather than offering
+generic suggestions like "consider parallel local roads" — that kind of
+vague filler is not useful and should not be presented as advice. It is
+fine to name the specific roadway or region affected (from tool results)
+without inventing an alternative route or time estimate you cannot support.
+
+Critical: you have no built-in knowledge of current Ontario road events,
+construction, or conditions — none of that is in your training data, since
+it changes constantly. Every specific claim about a roadway's current
+state (closures, lane restrictions, dates, locations) MUST come from an
+actual query_database or search_active_alerts call made in this turn. If a
+question mentions a route, city, or trip (e.g. "Ottawa to Montreal"), you
+must call a tool with relevant filters before answering — never answer
+from general geographic knowledge. If neither tool returns anything
+relevant to the question, say plainly that no matching data was found,
+rather than filling the answer with plausible-sounding but unverified detail.
 """
 
 
@@ -102,17 +134,11 @@ def _get_connection():
 
 
 def _is_safe_select(sql: str) -> bool:
-    """
-    Basic but strict validation: SELECT only, whitelisted schemas only,
-    no modification keywords. This is not a full SQL parser — for a
-    portfolio/local project with a reasonably trusted LLM, keyword-based
-    validation is an honest and sufficient safety net.
-    """
     normalized = sql.strip().lower()
     if not normalized.startswith("select"):
         return False
     forbidden = ("insert", "update", "delete", "drop", "alter", "truncate", "grant", "create")
-    if any(kw in normalized for kw in forbidden):
+    if any(re.search(rf"\b{kw}\b", normalized) for kw in forbidden):
         return False
     if not any(f"{schema}." in normalized for schema in ALLOWED_SCHEMAS):
         return False
@@ -143,9 +169,6 @@ def query_database(sql_query: str) -> str:
 
         text_result = str(rows)
 
-        # If the query happened to select latitude/longitude, surface
-        # them as a machine-readable block for the mini-map, without
-        # asking the model to repeat or interpret coordinates itself.
         locations = [
             {"lat": r["latitude"], "lon": r["longitude"], "label": r.get("roadway_name") or r.get("description", "")}
             for r in rows
@@ -187,9 +210,6 @@ def search_active_alerts(query: str) -> str:
             )
             matches = cur.fetchall()
 
-            # Look up coordinates for each match from its source table —
-            # description_embeddings only stores the text, not the
-            # location, so a follow-up lookup is needed per source.
             locations = []
             for m in matches:
                 if m["source_table"] == "evenements":
@@ -226,17 +246,6 @@ def search_active_alerts(query: str) -> str:
 
 
 def _build_llm(provider: str, api_key: str):
-    """
-    Instantiate the right chat client based on the provider chosen by
-    the user. The key is only used for this instantiation — never
-    written to disk or logged.
-
-    Lightweight/economical models are deliberately chosen over each
-    provider's most capable option: the task at hand (picking a tool,
-    generating a simple SQL query, summarizing a result) doesn't need
-    maximum power, and it keeps the per-question cost low for the user
-    supplying their own key.
-    """
     if provider == "Claude":
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model="claude-haiku-4-5", api_key=api_key, temperature=0)
@@ -250,20 +259,58 @@ def _build_llm(provider: str, api_key: str):
         raise ValueError(f"Unknown provider: {provider}")
 
 
-def extract_locations(intermediate_steps: list) -> list[dict]:
-    """
-    Pulls out the LOCATIONS_JSON block appended by query_database/
-    search_active_alerts to any tool output in this run, for the mini-map.
-    Returns an empty list if no tool call in this turn produced coordinates.
-    """
+_FRENCH_MARKERS = (
+    " le ", " la ", " les ", " des ", " est-ce", "es ce", "qu'est", "es-tu",
+    " sur ", " avec ", " pour ", " tu me", "peux-tu", " autre ", " quel ",
+    " quelle ", "état", " voie", "eatat",
+)
+
+
+def _detect_language_instruction(text: str, history_text: str = "") -> str:
+    combined = f" {text.lower()} {history_text.lower()} "
+    if any(marker in combined for marker in _FRENCH_MARKERS):
+        return "Reply in French. The user's message (or this conversation) is in French."
+    return "Reply in English. The user's message is in English."
+
+
+def extract_locations(intermediate_steps) -> list[dict]:
     locations = []
-    for _, tool_output in intermediate_steps:
-        if isinstance(tool_output, str) and LOCATIONS_MARKER in tool_output:
-            _, _, json_part = tool_output.partition(LOCATIONS_MARKER)
-            try:
-                locations.extend(json.loads(json_part))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Failed to parse locations block from tool output")
+
+    if not intermediate_steps:
+        return locations
+
+    for step in intermediate_steps:
+
+        if not isinstance(step, (tuple, list)):
+            continue
+
+        if len(step) != 2:
+            continue
+
+        _, tool_output = step
+
+        if not isinstance(tool_output, str):
+            continue
+
+        if LOCATIONS_MARKER not in tool_output:
+            continue
+
+        try:
+            _, json_part = tool_output.split(LOCATIONS_MARKER, 1)
+            parsed = json.loads(json_part)
+
+            if isinstance(parsed, list):
+                for loc in parsed:
+                    if (
+                        isinstance(loc, dict)
+                        and "lat" in loc
+                        and "lon" in loc
+                    ):
+                        locations.append(loc)
+
+        except Exception:
+            logger.exception("Failed to parse locations.")
+
     return locations
 
 
@@ -276,7 +323,7 @@ def build_agent(provider: str, api_key: str) -> AgentExecutor:
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
+        ("human", "[{language_instruction}]\n\n{input}"),
         ("placeholder", "{agent_scratchpad}"),
     ])
 
